@@ -51,6 +51,13 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
         # A particle with fewer neighbors sits at a free surface, where the divergence estimate is unreliable.
         self._df_min_div_neighbors = 20
 
+        # Implicit position-based fluids (IPBF) parameters
+        self._ipbf_compliance = options.compliance
+        self._ipbf_damping_compliance = options.damping_compliance
+        self._ipbf_has_damping = options.damping_compliance is not None
+        # Distance between the damped and the solved positions over which the damping fades out, as in IPBF.
+        self._ipbf_damping_dist = 60.0 * self._support_radius
+
         self._particle_volume = options.particle_volume_factor * self._particle_size**3
 
         # Boundary particles sampled on the surface of the rigid geoms. The spacing is the one of the regular triangle
@@ -73,7 +80,7 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
     def init_particle_fields(self):
         # dynamic particle state
         # TODO: Some fields may not need to be in both reordered and un-reoredered.
-        struct_particle_state = qd.types.struct(
+        particle_state_dtypes = dict(
             pos=gs.qd_vec3,  # position
             vel=gs.qd_vec3,  # velocity
             acc=gs.qd_vec3,  # non-pressure acceleration
@@ -82,24 +89,37 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
             active=gs.qd_bool,
             # Micro-rotation (Bender et al. 2017, "Turbulent Micropolar SPH Fluids with Foam"), allocated on demand.
             **(dict(angular_vel=gs.qd_vec3, angular_acc=gs.qd_vec3) if self._micropolar else {}),
-            # --- DFSPH fields ---
-            # 1 / (|sum_j V_j grad W_ij|^2 + sum_j |V_j grad W_ij|^2), i.e. alpha * rho_0^2 / rho
-            alpha_factor_adj=gs.qd_float,
-            # sum_j V_j (a_i - a_j) . grad W_ij, the density change rate induced by the current pressure
-            predicted_source=gs.qd_float,
-            # p / rho^2 of the density solve, kept across substeps for warm starting
-            pressure_density2_norm_p=gs.qd_float,
-            # p / rho^2 of the divergence solve, kept across substeps for warm starting
-            pressure_density2_norm_d=gs.qd_float,
-            # pressure acceleration
-            pressure_acc=gs.qd_vec3,
-            # predicted density rho* / rho_0 (density solve), or density change rate (divergence solve)
-            density_adv_norm=gs.qd_float,
             # rho / rho_0 = sum_j V_j W_ij
             density_norm=gs.qd_float,
             # number of neighbors within the support radius
             n_neighbors=gs.qd_int,
         )
+        if self._pressure_solver == "IPBF":
+            struct_particle_state = qd.types.struct(
+                **particle_state_dtypes,
+                # position at the beginning of the substep
+                pos_prev=gs.qd_vec3,
+                # Newton step of the current iteration
+                delta_pos=gs.qd_vec3,
+                # position solved with the damping compliance, see [_kernel_ipbf_update_velocity]
+                pos_damped=gs.qd_vec3,
+            )
+        else:
+            struct_particle_state = qd.types.struct(
+                **particle_state_dtypes,
+                # 1 / (|sum_j V_j grad W_ij|^2 + sum_j |V_j grad W_ij|^2), i.e. alpha * rho_0^2 / rho
+                alpha_factor_adj=gs.qd_float,
+                # sum_j V_j (a_i - a_j) . grad W_ij, the density change rate induced by the current pressure
+                predicted_source=gs.qd_float,
+                # p / rho^2 of the density solve, kept across substeps for warm starting
+                pressure_density2_norm_p=gs.qd_float,
+                # p / rho^2 of the divergence solve, kept across substeps for warm starting
+                pressure_density2_norm_d=gs.qd_float,
+                # pressure acceleration
+                pressure_acc=gs.qd_vec3,
+                # predicted density rho* / rho_0 (density solve), or density change rate (divergence solve)
+                density_adv_norm=gs.qd_float,
+            )
 
         # static material info
         struct_material_info = qd.types.struct(
@@ -134,7 +154,7 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
             shape=(self._n_particles, self._B), needs_grad=False, layout=qd.Layout.SOA
         )
 
-        # Per-environment reductions of the DFSPH solver iterations.
+        # Per-environment reductions of the DFSPH and IPBF solver iterations.
         self.envs_n_active = qd.field(gs.qd_int, shape=(self._B,))
         self.envs_solver_error = qd.field(gs.qd_float, shape=(self._B,))
 
@@ -528,9 +548,10 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
         V_b = self.boundary_particles_reordered[j, i_b].volume
         x_ib = self.particles_reordered[i, i_b].pos - self.boundary_particles_reordered[j, i_b].pos
         ret.density_norm += V_b * self.cubic_kernel(x_ib.norm())
-        # BWJ23 eq. (32): boundary particles carry no constraint of their own, so they only enter the gradient of
-        # the constraint of particle i, and not the sum of squared neighbor gradients.
-        ret.grad_p_i += V_b * self.cubic_kernel_derivative(x_ib)
+        if qd.static(self._pressure_solver == "DFSPH"):
+            # BWJ23 eq. (32): boundary particles carry no constraint of their own, so they only enter the gradient of
+            # the constraint of particle i, and not the sum of squared neighbor gradients.
+            ret.grad_p_i += V_b * self.cubic_kernel_derivative(x_ib)
         ret.n_neighbors += 1
 
     @qd.func
@@ -566,9 +587,10 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
         x_ij = self.particles_reordered[i, i_b].pos - self.particles_reordered[j, i_b].pos
 
         ret.density_norm += V_j * self.cubic_kernel(x_ij.norm())
-        grad_p_j = -V_j * self.cubic_kernel_derivative(x_ij)
-        ret.sum_grad_p_k += grad_p_j.norm_sqr()
-        ret.grad_p_i -= grad_p_j
+        if qd.static(self._pressure_solver == "DFSPH"):
+            grad_p_j = -V_j * self.cubic_kernel_derivative(x_ij)
+            ret.sum_grad_p_k += grad_p_j.norm_sqr()
+            ret.grad_p_i -= grad_p_j
         ret.n_neighbors += 1
 
     @qd.kernel
@@ -606,13 +628,14 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
                         i_b,
                     )
 
-                sum_grad_p_k = ret.sum_grad_p_k + ret.grad_p_i.norm_sqr()
-                factor = gs.qd_float(0.0)
-                if sum_grad_p_k > self._df_eps:
-                    factor = 1.0 / sum_grad_p_k
+                if qd.static(self._pressure_solver == "DFSPH"):
+                    sum_grad_p_k = ret.sum_grad_p_k + ret.grad_p_i.norm_sqr()
+                    factor = gs.qd_float(0.0)
+                    if sum_grad_p_k > self._df_eps:
+                        factor = 1.0 / sum_grad_p_k
+                    self.particles_reordered[i_p, i_b].alpha_factor_adj = factor
 
                 self.particles_reordered[i_p, i_b].density_norm = ret.density_norm
-                self.particles_reordered[i_p, i_b].alpha_factor_adj = factor
                 self.particles_reordered[i_p, i_b].n_neighbors = ret.n_neighbors
                 self.envs_n_active[i_b] += 1
 
@@ -837,6 +860,197 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
         self._kernel_apply_pressure_acc(is_divergence)
 
     # ------------------------------------------------------------------------------------
+    # ------------------------------------- IPBF -----------------------------------------
+    # ------------------------------------------------------------------------------------
+    # Implicit position-based fluids (Diaz et al. 2025, "Implicit Position-Based Fluids"). Each iteration takes one
+    # Newton step per particle on the variational form of implicit Euler, holding its neighbors fixed as in vertex block
+    # descent, and applies half of it to all particles at once (relaxed Jacobi). The energy is the inertial term
+    # 1 / (2 dt^2) ||x - y||_M^2 plus sum_j V_j k / 2 C_j^2, with y the inertial positions, k the bulk modulus and
+    # C_j = max(rho_j / rho_0 - 1, 0) the density constraints clamped at the free surface. Dividing it by k V, the rest
+    # volume V being shared by all particles, leaves the weight alpha rho_0 / dt^2 on the inertial term of a particle,
+    # where alpha = 1 / k is the compliance. Boundary particles carry no constraint of their own, so they only enter the
+    # constraint of the fluid particles around them.
+
+    @qd.kernel
+    def _kernel_ipbf_predict_position(self, f: qd.i32):
+        for i_p, i_b in qd.ndrange(self._n_particles, self._B):
+            if self.particles_reordered[i_p, i_b].active:
+                pos = self.particles_reordered[i_p, i_b].pos
+                self.particles_reordered[i_p, i_b].pos_prev = pos
+                self.particles_reordered[i_p, i_b].pos = self.boundary.impose_pos(
+                    pos + self._substep_dt * self.particles_reordered[i_p, i_b].vel
+                )
+
+    @qd.func
+    def _task_ipbf_compute_newton_system(self, i, j, ret: qd.template(), i_b):
+        i_m_i = self.particles_reordered[i, i_b].material
+        i_m_j = self.particles_reordered[j, i_b].material
+        V_i = self.materials[i_m_i].rest_volume
+        V_j = self.materials[i_m_j].rest_volume
+        x_ij = self.particles_reordered[i, i_b].pos - self.particles_reordered[j, i_b].pos
+        grad_w = self.cubic_kernel_derivative(x_ij)
+        hess_w = self.cubic_kernel_hessian(x_ij)
+
+        # Derivatives of the constraint of particle i, which its own neighbor loop is the only one to know.
+        ret.grad_c_i += V_j * grad_w
+        ret.hess_c_i += V_j * hess_w
+
+        # Derivatives of the constraint of particle j with respect to x_i. The Gauss-Newton term dC_j^T dC_j enters the
+        # Hessian of every neighbor, clamped constraints included, which makes it positive definite as soon as the
+        # neighbors span all directions. Leaving it out for the clamped constraints lets particles with few active
+        # constraints around them take steps large enough to inject energy.
+        grad_c_j = V_i * grad_w
+        ret.hess += grad_c_j.outer_product(grad_c_j)
+        c_j = self.particles_reordered[j, i_b].density_norm - 1.0
+        if c_j > 0.0:
+            ret.force -= c_j * grad_c_j
+            # The row sums of the squared entries of a symmetric matrix are the squared norms of its columns.
+            ret.hess_diag += c_j * V_i * qd.sqrt((hess_w * hess_w) @ qd.Vector([1.0, 1.0, 1.0], dt=gs.qd_float))
+
+    @qd.func
+    def _task_ipbf_compute_boundary_newton_system(self, i, j, ret: qd.template(), i_b):
+        V_b = self.boundary_particles_reordered[j, i_b].volume
+        x_ib = self.particles_reordered[i, i_b].pos - self.boundary_particles_reordered[j, i_b].pos
+        ret.grad_c_i += V_b * self.cubic_kernel_derivative(x_ib)
+        ret.hess_c_i += V_b * self.cubic_kernel_hessian(x_ib)
+
+    @qd.kernel
+    def _kernel_ipbf_solve_iteration(self) -> float:
+        """
+        Run one relaxed Jacobi iteration of the IPBF solver and return the worst average density error over envs.
+
+        The density error is the average positive deviation of the density from the rest density, normalized by the
+        rest density, at the positions the iteration starts from. [_kernel_compute_density_and_factor] must have
+        evaluated the densities at these positions.
+        """
+        inv_dt2 = 1.0 / (self._substep_dt * self._substep_dt)
+
+        for i_b in range(self._B):
+            self.envs_solver_error[i_b] = 0.0
+
+        for i_p, i_b in qd.ndrange(self._n_particles, self._B):
+            if self.particles_reordered[i_p, i_b].active:
+                ret = qd.Struct(
+                    grad_c_i=qd.Vector.zero(gs.qd_float, 3),
+                    hess_c_i=qd.Matrix.zero(gs.qd_float, 3, 3),
+                    force=qd.Vector.zero(gs.qd_float, 3),
+                    hess=qd.Matrix.zero(gs.qd_float, 3, 3),
+                    hess_diag=qd.Vector.zero(gs.qd_float, 3),
+                )
+                self.sh.for_all_neighbors(
+                    i_p,
+                    self.particles_reordered.pos,
+                    self._support_radius,
+                    ret,
+                    self._task_ipbf_compute_newton_system,
+                    i_b,
+                )
+                if qd.static(self._has_boundary):
+                    self.sh_boundary.for_all_neighbors_of_pos(
+                        i_p,
+                        self.particles_reordered[i_p, i_b].pos,
+                        -1,
+                        self.boundary_particles_reordered.pos,
+                        self._support_radius,
+                        ret,
+                        self._task_ipbf_compute_boundary_newton_system,
+                        i_b,
+                    )
+
+                ret.hess += ret.grad_c_i.outer_product(ret.grad_c_i)
+                c_i = self.particles_reordered[i_p, i_b].density_norm - 1.0
+                if c_i > 0.0:
+                    ret.force -= c_i * ret.grad_c_i
+                    ret.hess_diag += c_i * qd.sqrt(
+                        (ret.hess_c_i * ret.hess_c_i) @ qd.Vector([1.0, 1.0, 1.0], dt=gs.qd_float)
+                    )
+                    self.envs_solver_error[i_b] += c_i
+
+                # The constraint curvature C_j d2C_j / dx_i2 is indefinite, so it is replaced by the diagonal of the
+                # norms of its columns (Andrews et al. 2017, "Geometric Stiffness for Real-time Constrained Multibody
+                # Dynamics").
+                for k in qd.static(range(3)):
+                    ret.hess[k, k] += ret.hess_diag[k]
+
+                pos = self.particles_reordered[i_p, i_b].pos
+                pos_inertial = self.boundary.impose_pos(
+                    self.particles_reordered[i_p, i_b].pos_prev
+                    + self._substep_dt * self.particles_reordered[i_p, i_b].vel
+                )
+                i_m = self.particles_reordered[i_p, i_b].material
+                rest_density = self.materials[i_m].rest_density
+                eye = qd.Matrix.identity(gs.qd_float, 3)
+
+                inertia = self._ipbf_compliance * rest_density * inv_dt2
+                delta_pos = qd.Vector.zero(gs.qd_float, 3)
+                # A positive diagonal makes the Hessian positive definite even when the few neighbors of a particle
+                # leave its Gauss-Newton term singular. A zero diagonal means that no constraint is active, so the force
+                # vanishes.
+                if ret.hess_diag.min() + inertia > gs.EPS:
+                    delta_pos = (ret.hess + inertia * eye).inverse() @ (ret.force - inertia * (pos - pos_inertial))
+                self.particles_reordered[i_p, i_b].delta_pos = delta_pos
+
+                if qd.static(self._ipbf_has_damping):
+                    inertia_damped = self._ipbf_damping_compliance * rest_density * inv_dt2
+                    delta_pos_damped = (ret.hess + inertia_damped * eye).inverse() @ (
+                        ret.force - inertia_damped * (pos - pos_inertial)
+                    )
+                    self.particles_reordered[i_p, i_b].pos_damped = self.boundary.impose_pos(
+                        pos + 0.5 * delta_pos_damped
+                    )
+
+        for i_p, i_b in qd.ndrange(self._n_particles, self._B):
+            if self.particles_reordered[i_p, i_b].active:
+                self.particles_reordered[i_p, i_b].pos = self.boundary.impose_pos(
+                    self.particles_reordered[i_p, i_b].pos + 0.5 * self.particles_reordered[i_p, i_b].delta_pos
+                )
+
+        max_avg_error = gs.qd_float(0.0)
+        for i_b in range(self._B):
+            n_active = qd.max(self.envs_n_active[i_b], 1)
+            qd.atomic_max(max_avg_error, self.envs_solver_error[i_b] / n_active)
+        return max_avg_error
+
+    def _ipbf_solve(self, f):
+        """
+        Move the particles from their inertial positions toward the rest density with the IPBF iterations.
+
+        Iterations continue until the average density error of every environment drops below the tolerance, within
+        the min / max iteration bounds of the density solver.
+        """
+        n_iters, avg_error, is_converged = 0, 0.0, False
+        while (not is_converged or n_iters < self._df_min_den_iters) and n_iters < self._df_max_den_iters:
+            self._kernel_compute_density_and_factor(f)
+            avg_error = self._kernel_ipbf_solve_iteration()
+            is_converged = avg_error <= self._df_max_error_den
+            n_iters += 1
+
+        gs.logger.debug(f"IPBF solve: {n_iters} iterations, avg error {avg_error:.4g}")
+
+    @qd.kernel
+    def _kernel_ipbf_update_velocity(self, f: qd.i32):
+        inv_dt = 1.0 / self._substep_dt
+        for i_p, i_b in qd.ndrange(self._n_particles, self._B):
+            if self.particles_reordered[i_p, i_b].active:
+                pos = self.particles_reordered[i_p, i_b].pos
+                pos_prev = self.particles_reordered[i_p, i_b].pos_prev
+                vel = (pos - pos_prev) * inv_dt
+
+                if qd.static(self._ipbf_has_damping):
+                    # Eq. (17) of IPBF: an incompressible solve that has not converged injects kinetic energy, so the
+                    # kinetic energy of a particle is brought toward the one it reaches in the last iteration solved
+                    # with the damping compliance, all the more as both positions are close.
+                    pos_damped = self.particles_reordered[i_p, i_b].pos_damped
+                    dist = (pos - pos_damped).norm()
+                    vel_sqr = vel.norm_sqr()
+                    vel_damped_sqr = ((pos_damped - pos_prev) * inv_dt).norm_sqr()
+                    if dist < self._ipbf_damping_dist and vel_damped_sqr < vel_sqr:
+                        weight = 1.0 - dist / self._ipbf_damping_dist
+                        vel *= qd.sqrt(1.0 - weight * (vel_sqr - vel_damped_sqr) / vel_sqr)
+
+                self.particles_reordered[i_p, i_b].vel = vel
+
+    # ------------------------------------------------------------------------------------
     # ------------------------------------- utils ----------------------------------------
     # ------------------------------------------------------------------------------------
 
@@ -875,6 +1089,32 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
                 res = 6.0 * k * q * (3.0 * q - 2.0) * grad_q
             else:
                 res = -6.0 * k * (1.0 - q) ** 2 * grad_q
+        return res
+
+    @qd.func
+    def cubic_kernel_hessian(self, r):
+        """
+        Hessian of cubic spline smoothing kernel.
+
+        The Hessian of a radial kernel is W'' along r and W' / |r| across. Both are finite and equal at the kernel
+        center, where the direction of r is undefined.
+        """
+        res = qd.Matrix.zero(gs.qd_float, 3, 3)
+
+        r_norm = r.norm()
+        h = self._support_radius
+        k = 8.0 / np.pi / h**3
+        q = r_norm / h
+        if q <= 1.0:
+            d2w = 12.0 * k * (3.0 * q - 1.0) / h**2
+            dw_over_r = 6.0 * k * (3.0 * q - 2.0) / h**2
+            if q > 0.5:
+                d2w = 12.0 * k * (1.0 - q) / h**2
+                dw_over_r = -6.0 * k * (1.0 - q) ** 2 / (q * h**2)
+            dir_r = qd.Vector.zero(gs.qd_float, 3)
+            if r_norm > 1e-5:
+                dir_r = r / r_norm
+            res = dw_over_r * qd.Matrix.identity(gs.qd_float, 3) + (d2w - dw_over_r) * dir_r.outer_product(dir_r)
         return res
 
     @qd.func
@@ -919,17 +1159,29 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
                 self._kernel_update_boundary_particles(self.sim.rigid_solver.dyn_state.links)
             self._kernel_reorder_particles(f)
             self._kernel_compute_density_and_factor(f)
-            if not self._df_skip_div:
-                self._pressure_solve(is_divergence=True)
-            self._kernel_compute_non_pressure_forces(f, self._sim.cur_t)
-            self._pressure_solve(is_divergence=False)
+            if self._pressure_solver == "IPBF":
+                self._kernel_compute_non_pressure_forces(f, self._sim.cur_t)
+                self._kernel_ipbf_predict_position(f)
+                # The neighbors are searched around the inertial positions, from which the iterations only move the
+                # particles by small corrections.
+                self._kernel_copy_from_reordered(f)
+                self._kernel_reorder_particles(f)
+                self._ipbf_solve(f)
+            else:
+                if not self._df_skip_div:
+                    self._pressure_solve(is_divergence=True)
+                self._kernel_compute_non_pressure_forces(f, self._sim.cur_t)
+                self._pressure_solve(is_divergence=False)
 
     def substep_pre_coupling_grad(self, f):
         pass
 
     def substep_post_coupling(self, f):
         if self.is_active:
-            self._kernel_advect_position(f)
+            if self._pressure_solver == "IPBF":
+                self._kernel_ipbf_update_velocity(f)
+            else:
+                self._kernel_advect_position(f)
             self._kernel_copy_from_reordered(f)
 
     def substep_post_coupling_grad(self, f):
@@ -1029,8 +1281,9 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
                 self.particles[i_p, i_b].pos[i] = pos[i_p_, i]
             self.particles[i_p, i_b].vel = qd.Vector.zero(gs.qd_float, 3)
             self.particles[i_p, i_b].material = material_idx
-            self.particles[i_p, i_b].pressure_density2_norm_p = 0.0
-            self.particles[i_p, i_b].pressure_density2_norm_d = 0.0
+            if qd.static(self._pressure_solver == "DFSPH"):
+                self.particles[i_p, i_b].pressure_density2_norm_p = 0.0
+                self.particles[i_p, i_b].pressure_density2_norm_d = 0.0
             if qd.static(self._micropolar):
                 self.particles[i_p, i_b].angular_vel = qd.Vector.zero(gs.qd_float, 3)
 

@@ -6,11 +6,13 @@
 # Irregular samplers (e.g. pbs, random) introduce local density fluctuations at initialization, which lead to large
 # spurious pressure forces and can cause the simulation to become unstable or diverge.
 
-import pytest
 import numpy as np
+import pytest
 
 import genesis as gs
 from genesis.utils.misc import qd_to_numpy
+
+from ..utils.assertions import assert_allclose
 
 
 def create_sph_scene(show_viewer, particle_size=0.01, pressure_solver="WCSPH"):
@@ -338,3 +340,60 @@ def test_pressure_carries_column_weight(show_viewer, pressure_solver):
     p_top = pressures[heights >= 0.3].mean()
     assert p_bottom > 1.5 * p_middle
     assert p_middle > 2.0 * p_top
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("compliance, height_ref", [(0.0, 0.0892), (1e-4, 0.0766)])
+def test_ipbf_column_at_large_substep(show_viewer, compliance, height_ref):
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(
+            dt=1.0 / 240.0,
+            substeps=1,
+            gravity=(0.0, 0.0, -9.81),
+        ),
+        sph_options=gs.options.SPHOptions(
+            particle_size=0.02,
+            pressure_solver="IPBF",
+            lower_bound=(-0.1, -0.1, 0.0),
+            upper_bound=(0.1, 0.1, 1.0),
+            max_density_solver_iterations=4,
+            compliance=compliance,
+        ),
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos=(0.7, 0.0, 0.3),
+            camera_lookat=(0.0, 0.0, 0.12),
+            camera_fov=40,
+        ),
+        show_viewer=show_viewer,
+    )
+    scene.add_entity(
+        morph=gs.morphs.Plane(),
+    )
+    liquid = scene.add_entity(
+        morph=gs.morphs.Box(
+            pos=(0.0, 0.0, 0.15),
+            size=(0.2, 0.2, 0.3),
+        ),
+        material=gs.materials.SPH.Liquid(
+            sampler="regular",
+        ),
+    )
+    scene.build(n_envs=2)
+
+    # The regular sampling is less dense than the rest density, so the column falls onto the floor before settling.
+    # All particles share the same mass, and the fluid starts at rest, so its kinetic energy can only come from the
+    # potential energy it releases.
+    pos_0 = liquid.get_particles_pos()
+    for _ in range(100):
+        scene.step()
+        pos, vel = liquid.get_particles_pos(), liquid.get_particles_vel()
+        kinetic_energy = 0.5 * vel.square().sum(dim=(-2, -1))
+        potential_energy_released = 9.81 * (pos_0 - pos)[..., 2].sum(dim=-1)
+        assert (kinetic_energy < potential_energy_released).all()
+
+    # The impact speed is about 1 m/s.
+    assert (vel.norm(dim=-1).mean(dim=-1) < 0.075).all()
+
+    # FIXME: Replace the reference height of the settled column by a physics-informed bound. The hydrostatic estimate
+    # misses the denser packing of the particles along the domain bounds and the free surface.
+    assert_allclose(pos[..., 2].mean(dim=-1), height_ref, rtol=0.02)

@@ -746,12 +746,16 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
     use_legacy_solver : bool, optional
         Whether to use the legacy SPH solver. The legacy solver offers the weakly compressible 'WCSPH' pressure solver
         and two-way coupling with rigid, MPM and FEM entities, but its 'DFSPH' pressure solver lets the fluid compress
-        noticeably. The default solver enforces incompressibility accurately, but it only offers 'DFSPH', and its
-        coupling with rigid entities is one-way (the fluid does not push rigid entities back) and with MPM and FEM
-        entities absent so far. Defaults to False.
+        noticeably. The default solver enforces incompressibility accurately, but it only offers 'DFSPH' and 'IPBF',
+        and its coupling with rigid entities is one-way (the fluid does not push rigid entities back) and with MPM and
+        FEM entities absent so far. Defaults to False.
     pressure_solver : str, optional
-        Pressure solver type, either 'WCSPH' (legacy solver only) or 'DFSPH'. Defaults to 'WCSPH' for the legacy
-        solver and 'DFSPH' otherwise.
+        Pressure solver type, either 'WCSPH' (legacy solver only), 'DFSPH' or 'IPBF' (default solver only). 'DFSPH'
+        (divergence-free SPH) corrects velocities and keeps the density error lowest when it converges, but it can
+        blow up after violent impacts or with few iterations and large substeps. 'IPBF' (implicit position-based
+        fluids) corrects positions and stays stable with few iterations and large substeps, at the cost of some extra
+        compression when the iterations cannot catch up. Defaults to 'WCSPH' for the legacy solver and 'DFSPH'
+        otherwise.
     lower_bound : tuple, shape (3,), optional
         Lower bound of the simulation domain. Defaults to (-100.0, -100.0, 0.0).
     upper_bound : tuple, shape (3,), optional
@@ -763,17 +767,17 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
     max_divergence_error : float, optional
         Maximum divergence error for DFSPH. Defaults to 0.1%.
     max_density_error : float, optional
-        Maximum density error for DFSPH. Defaults to 0.05%.
+        Maximum average density error of the DFSPH density solver and of the IPBF solver. Defaults to 0.05%.
     max_divergence_solver_iterations : int, optional
         Maximum number of iterations for the divergence solver. Defaults to 10.
     max_density_solver_iterations : int, optional
-        Maximum number of iterations for the density solver. Defaults to 10.
+        Maximum number of iterations for the DFSPH density solver and for the IPBF solver. Defaults to 10.
     min_divergence_solver_iterations : int, optional
         Minimum number of iterations for the DFSPH divergence solver. More iterations cost time but reduce the
         velocity divergence left over when the error tolerance is met early. Defaults to 1.
     min_density_solver_iterations : int, optional
-        Minimum number of iterations for the DFSPH density solver. More iterations cost time but reduce the density
-        error left over when the error tolerance is met early. Defaults to 1.
+        Minimum number of iterations for the DFSPH density solver and for the IPBF solver. More iterations cost time
+        but reduce the density error left over when the error tolerance is met early. Defaults to 1.
     skip_divergence_solver : bool, optional
         Whether to skip the DFSPH divergence solver, leaving incompressibility to the density solver alone. This
         saves time per substep, but the fluid becomes noisier and less stable, and the density solver may need more
@@ -794,12 +798,22 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
         smaller offset leaves a visible gap between fluid and geom, and fluid sampled flush against the geom starts
         compressed and gets pushed away. Keep the offset below half the thickness of the thinnest coupled geom, or its
         two faces cross each other. Only used by the default solver. Defaults to half the particle size.
+    compliance : float, optional
+        Inverse of the bulk modulus of the fluid in 1/Pa, used by the 'IPBF' pressure solver only. Zero makes the
+        fluid as incompressible as the iterations allow. A positive value lets the fluid compress under pressure, by
+        about compliance * rest_density * g * depth under its own weight, which also calms the residual jitter of the
+        particles and lets the fluid settle sooner. Defaults to 0.0.
+    damping_compliance : float, optional
+        Compliance in 1/Pa of the softer fluid that the 'IPBF' pressure solver uses as a reference to remove the
+        kinetic energy injected by iterations that have not converged, or None to disable this damping. A larger value
+        calms the jitter of the particles at rest more, but slows down the flow and takes energy out of splashes and
+        waves. Its effect grows as the substep shrinks. Defaults to 1e-8.
     """
 
     particle_size: PositiveFloat = 0.02
     particle_volume_factor: PositiveFloat = 0.75
     use_legacy_solver: StrictBool = False
-    pressure_solver: Literal["WCSPH", "DFSPH"] | None = None
+    pressure_solver: Literal["WCSPH", "DFSPH", "IPBF"] | None = None
 
     lower_bound: Vec3FType = (-100.0, -100.0, 0.0)
     upper_bound: Vec3FType = (100.0, 100.0, 100.0)
@@ -819,6 +833,10 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
     warm_start: StrictBool = True
     micropolar: StrictBool = False
     boundary_offset: NonNegativeFloat | None = None
+
+    # IPBF parameters
+    compliance: NonNegativeFloat = 0.0
+    damping_compliance: PositiveFloat | None = 1e-8
 
     _support_radius: float = PrivateAttr(default=0.0)
     _hash_grid_res: np.ndarray = PrivateAttr(default=None)
@@ -840,6 +858,8 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
             self.pressure_solver = "WCSPH" if self.use_legacy_solver else "DFSPH"
         elif self.pressure_solver == "WCSPH" and not self.use_legacy_solver:
             gs.raise_exception("Pressure solver 'WCSPH' requires `use_legacy_solver=True`.")
+        elif self.pressure_solver == "IPBF" and self.use_legacy_solver:
+            gs.raise_exception("Pressure solver 'IPBF' requires `use_legacy_solver=False`.")
 
         self._support_radius = 2 * self.particle_size
 
