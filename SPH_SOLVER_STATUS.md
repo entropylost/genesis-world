@@ -44,10 +44,11 @@ remain required. Position-level drift stays disabled; thin-wall repair and accur
 Synchronization checked before this goal update: `Roushelfy/Genesis:fluidbench/sph-solver` and
 `entropylost/genesis-world:main` both point to c00833b277361c63d78453485868effd238eeca1. This goal/status milestone
 must be synchronized as well, preserving all solver code and historical receipts.
-Synchronization of this documentation milestone is blocked: the GitHub integration returned HTTP 403 / resource not
-accessible by integration for both updating the collaborator main ref and creating a synchronization pull request.
-The source goal commit is 79f8240915654cf1df6eb2f407bc5d57c0c17931; this status follow-up records the blocker. No
-collaborator integration or pull request is claimed. Resume synchronization after destination write access is available.
+Synchronization of this documentation milestone was first blocked: the GitHub integration returned HTTP 403 / resource
+not accessible by integration for both updating the collaborator main ref and creating a synchronization pull request
+(source goal commit 79f8240915654cf1df6eb2f407bc5d57c0c17931). Resolved on 2026-10-31 through the owner-authorized
+fast-forward workflow from the cluster checkout: `entropylost/genesis-world:main` went from c00833b2 to de51bc9c, which
+holds 79f82409, b0b6f0bc and the status record of finding 71; source and destination heads were equal after the push.
 
 ## Stage A delivery (2026-10-31)
 
