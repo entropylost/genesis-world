@@ -976,6 +976,13 @@ through `scripts/campaign_env.sh <revision>` of the data directory against a fro
     unit tests. The noise of a first pass stopped at the tolerance is not removed by two plain iterations at the end of
     the solves.
 
+71. Three instead of four GPU tasks per pressure iteration, measured and not adopted (development snapshot `dev-f3` on
+    c00833b2, diff `worktrees/dev-f3/final.diff`; FluidBench `sphgoal-f3t-n1`, receipts `*__f3_*`). The second neighbor
+    loop read the pressure accelerations as the sums of their four shares and the response of the coupled links from
+    their wrenches, so that the loop adding the shares was dropped. Every check kept its value (rest rms 0.0083 m/s,
+    unit tests as in finding 57), but reading four shares per neighbor costs more than the task it saves: RTF 0.248 at
+    R2 (0.282 with four tasks) and 0.428-0.445 at R1 (0.408-0.425).
+
 ## Validation at 47499e5c (v5)
 
 Receipts tagged `v5*` (FluidBench `report/sph_goal.md`, acceptance matrix): `v5` default, `v5i` isotropic pressure
