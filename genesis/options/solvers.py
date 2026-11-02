@@ -797,6 +797,28 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
     max_viscosity_solver_iterations : int, optional
         Maximum number of iterations of the implicit viscosity solve. A substep that reaches it keeps the velocity of
         the last iteration and is reported as unconverged. Only used by the default solver. Defaults to 100.
+    viscosity_correction : str, optional
+        Benchmark switch of the directional correction of the interior viscosity (SPH_SOLVER_GOAL.md N6, A1):
+        "directional" (15 coefficients per particle), "isotropic" (a scalar rescaling to the trace of the continuum
+        moment) or "none" (the uncorrected pair coefficient). Only used by the default solver. Defaults to
+        "directional".
+    wall_viscosity_model : str, optional
+        Benchmark switch of the wall viscosity (A2): "ghost_columns" (no-slip ghost fluid columns behind each boundary
+        particle) or "boundary_pairs" (the boundary particle itself as a viscous neighbor moving with the wall). Only
+        used by the default solver. Defaults to "ghost_columns".
+    wall_ghost_points : int, optional
+        Quadrature points of a ghost column of the wall viscosity (A2): 1, 2, 4 or 8. Only used by the default solver.
+        Defaults to 8.
+    viscosity_residual_projection : bool, optional
+        Benchmark switch (A4) of the rigid velocity correction that removes the net force and torque of the residual of
+        the viscosity solve. Only used by the default solver. Defaults to True.
+    wall_clearance_velocity, wall_clearance_position, wall_clearance_rotation : bool, optional
+        Benchmark switches (A5) of the parts of the wall clearance guard: the unilateral normal velocity constraint,
+        the soft position recovery and the rigid rotation of the fluid that compensates the angular momentum of the
+        recovery. Only used by the default solver. Default to True.
+    correction_diagnostics : bool, optional
+        Count how often and how strongly the corrections act, into the solve stats (SPHSolveStats). Costs a kernel and
+        a host read per substep. Only used by the default solver. Defaults to False.
     max_coupling_iterations : int, optional
         Maximum number of passes alternating the viscosity solve and the density solve of a substep. A single pass
         suffices for fluids about as viscous as water, while very viscous fluids under pressure need more, which cost
@@ -897,6 +919,14 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
     max_viscosity_error: PositiveFloat = 0.1 * 0.01
     max_viscosity_solver_iterations: PositiveInt = 100
     max_coupling_iterations: PositiveInt = 30
+    viscosity_correction: Literal["directional", "isotropic", "none"] = "directional"
+    wall_viscosity_model: Literal["ghost_columns", "boundary_pairs"] = "ghost_columns"
+    wall_ghost_points: Literal[1, 2, 4, 8] = 8
+    viscosity_residual_projection: StrictBool = True
+    wall_clearance_velocity: StrictBool = True
+    wall_clearance_position: StrictBool = True
+    wall_clearance_rotation: StrictBool = True
+    correction_diagnostics: StrictBool = False
     max_constraint_iterations: NonNegativeInt = 4
     max_constraint_error: PositiveFloat = 0.01
     isotropic_pressure: StrictBool = False

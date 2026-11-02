@@ -291,10 +291,20 @@ def test_fluid_load_readout_is_link_impulse(show_viewer):
     mass = float(link.get_mass())
     cube.control_dofs_force((0.0,))
     vel_start = tensor_to_array(cube.get_dofs_velocity())[0]
-    loads = []
+    loads, pressure_loads = [], []
     for _ in range(20):
         scene.step()
-        loads.append(tensor_to_array(scene.sph_solver.get_links_fluid_wrench()[0])[link.idx, 2])
+        force, torque = (tensor_to_array(x)[link.idx] for x in scene.sph_solver.get_links_fluid_wrench())
+        loads.append(force[2])
+        # the pressure, viscous and clearance parts of the readout add up to it
+        parts = scene.sph_solver.get_links_fluid_wrench_parts()
+        part_force = sum(tensor_to_array(parts[name][0])[link.idx] for name in ("pressure", "viscous", "clearance"))
+        part_torque = sum(tensor_to_array(parts[name][1])[link.idx] for name in ("pressure", "viscous", "clearance"))
+        assert_allclose(part_force, force, rtol=1e-5, atol=1e-6 * mass * 9.81)
+        assert_allclose(part_torque, torque, rtol=1e-5, atol=1e-6 * mass * 9.81 * 0.02)
+        pressure_loads.append(tensor_to_array(parts["pressure"][0])[link.idx, 2])
     momentum_change = mass * (tensor_to_array(cube.get_dofs_velocity())[0] - vel_start)
     assert_allclose(momentum_change, (np.sum(loads) - 20 * mass * 9.81) * scene.dt, rtol=1e-2)
     assert np.mean(loads) > 0.5 * mass * 9.81
+    # the buoyancy of the cube is carried by the pressure
+    assert np.mean(pressure_loads) > 0.5 * mass * 9.81
