@@ -36,7 +36,7 @@ baseline with limitations. This documentation update does not fix a solver or es
 | N3 state and selected reset | pending | state audit, repeated restart/reset controls, original V12 and any prospectively defined statistical verdict |
 | N4 pressure shear and viscosity accuracy | pending | pressure/viscous stress separation, derived correction, engineering-viscosity accuracy and conservation/energy regressions |
 | N5 measured acceleration | pending for this stage; earlier optimizations retained | matched-feature timings after corrections, task/iteration profile, single and independent batched throughput |
-| N6 correction ablations (owner update 2026-11-02) | pending | A1-A7 individually and in key combinations: accuracy gains, runtime/memory cost, conservation, rest noise, leakage, state and stability side effects; retain/simplify/remove recommendation |
+| N6 correction ablations (owner update 2026-11-02) | implemented (readouts, switches, diagnostics: f7f339ca); stage 1 screen running | A1-A7 individually and in key combinations: accuracy gains, runtime/memory cost, conservation, rest noise, leakage, state and stability side effects; retain/simplify/remove recommendation |
 
 Latest committed timing baseline (cc03c40b; finding 68): S1 dt x8 RTF 0.408/0.282/0.126 at R1/R2/R3. This is a
 performance diagnostic; S1 water accuracy and RTF 0.5 at R2 remain open. Full implicit viscosity and two-way coupling
@@ -69,6 +69,31 @@ rejected both updating collaborator main and creating a pull request (resource n
 403). Resolved on 2026-11-02 through the owner-authorized fast-forward workflow from the cluster checkout:
 `entropylost/genesis-world:main` went from 914a900f to 0ef34dff (6fa95c80 and 0ef34dff); source and destination heads
 were equal after the push.
+
+## N6 progress (2026-11-02)
+
+- Attribution readout (f7f339ca): `SPHSolver.get_links_fluid_wrench_parts()` returns the pressure, viscous and
+  clearance parts of the fluid force and torque on every link, accumulated beside the total and saved/restored with it
+  by the constraint repetitions. `tests/coupling/test_sph_rigid.py::test_fluid_load_readout_is_link_impulse` checks
+  every step that the parts add up to the total (relative 1e-5) and that the pressure carries the buoyancy of the
+  cube. In the Couette runs of the development snapshot the parts add up to the total within 1.5e-8 N m
+  (FluidBench `couette__ab*`).
+- Benchmark switches (f7f339ca), defaults unchanged: `viscosity_correction` ("directional", "isotropic", "none"; A1),
+  `wall_viscosity_model` ("ghost_columns", "boundary_pairs") and `wall_ghost_points` (1, 2, 4, 8; A2),
+  `viscosity_residual_projection` (A4), `wall_clearance_velocity`, `wall_clearance_position`, `wall_clearance_rotation`
+  (A5); A3, A6, A7 and the coupling controls use the existing `wall_shear_consistency`, `isotropic_pressure`,
+  `isotropic_density`, `density_correction`, `max_coupling_iterations` and `max_constraint_iterations`.
+  `correction_diagnostics` adds to SPHSolveStats how often and how strongly the corrections act (free-surface blend
+  and clipped pair weights of A1, the distribution and bound activations of the A3 scale, the largest A4 correction,
+  the shifts, impulses, rotation and potential energy change of A5).
+- Default equivalence of the snapshot (receipts `*__ab_*`): momentum drift 4.1e-6 and 6.7e-6 per s, held joints within
+  0.2 % of the readout, stirring balance -0.61 %, thick-wall rest at R1 rms 0.0080 m/s without crossing, Couette torque
+  1.26 times the reference as before (profile 0.126); unit tests as in finding 57 after a float32 tolerance of the new
+  check. Every switch runs (`couette__abs_*`).
+- Stage 1 screen (FluidBench `cmds/gen_n6s.py`, `cmds_sphgoal_n6s_all.txt`; Genesis f7f339ca, FluidBench 0d1c9329,
+  frozen worktrees): 20 configurations (baseline, A1-A7 one-component changes, the coupling controls and the simple
+  anchor without A1-A5) times 16 screening cases with diagnostics, uninstrumented timings and kernel profiles of every
+  configuration on thick-wall S1 R2 at dt x8. Report: FluidBench `cluster/sph_n6_report.py` -> `report/sph_n6.md`.
 
 ## Stage A delivery (2026-10-31)
 
