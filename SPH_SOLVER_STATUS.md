@@ -63,7 +63,10 @@ getter call is not a completed diagnostic until the committed solver exports and
 one-component controls, key interactions and final full-horizon confirmations with unchanged references and bars.
 
 Source and collaborator main both hold 914a900f94e48161a89970018bf86b6fbf9db7cf before this documentation update.
-This goal/status milestone requires collaborator synchronization; record the verified outcome separately.
+This goal/status milestone requires collaborator synchronization. Source goal commit:
+`6fa95c8072298454c4effda0c30925b78ffe51b4`. The 2026-11-02 synchronization attempt is blocked: the GitHub integration
+rejected both updating collaborator main and creating a pull request (resource not accessible by integration / HTTP
+403). No collaborator integration or pull request is claimed; synchronize this milestone when write access permits.
 
 ## Stage A delivery (2026-10-31)
 
