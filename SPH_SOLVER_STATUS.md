@@ -36,6 +36,7 @@ baseline with limitations. This documentation update does not fix a solver or es
 | N3 state and selected reset | pending | state audit, repeated restart/reset controls, original V12 and any prospectively defined statistical verdict |
 | N4 pressure shear and viscosity accuracy | pending | pressure/viscous stress separation, derived correction, engineering-viscosity accuracy and conservation/energy regressions |
 | N5 measured acceleration | pending for this stage; earlier optimizations retained | matched-feature timings after corrections, task/iteration profile, single and independent batched throughput |
+| N6 correction ablations (owner update 2026-11-02) | pending | A1-A7 individually and in key combinations: accuracy gains, runtime/memory cost, conservation, rest noise, leakage, state and stability side effects; retain/simplify/remove recommendation |
 
 Latest committed timing baseline (cc03c40b; finding 68): S1 dt x8 RTF 0.408/0.282/0.126 at R1/R2/R3. This is a
 performance diagnostic; S1 water accuracy and RTF 0.5 at R2 remain open. Full implicit viscosity and two-way coupling
@@ -49,6 +50,20 @@ not accessible by integration for both updating the collaborator main ref and cr
 (source goal commit 79f8240915654cf1df6eb2f407bc5d57c0c17931). Resolved on 2026-10-31 through the owner-authorized
 fast-forward workflow from the cluster checkout: `entropylost/genesis-world:main` went from c00833b2 to de51bc9c, which
 holds 79f82409, b0b6f0bc and the status record of finding 71; source and destination heads were equal after the push.
+
+## Correction ablation requirement (2026-11-02)
+
+The owner requests the N6 campaign in SPH_SOLVER_GOAL.md for directional viscosity consistency, wall ghost columns,
+wall shear scaling, viscosity-residual momentum projection, wall clearance and its angular compensation, experimental
+isotropic pressure/density, and position drift correction. Include coupling-iteration diagnostic controls separately.
+This update adds requirements only; no ablation result or default change is claimed. N6 starts pending.
+
+Separate pressure, viscous and clearance load readouts are required for attribution. The FluidBench optional pressure
+getter call is not a completed diagnostic until the committed solver exports and validates the data. Run clean
+one-component controls, key interactions and final full-horizon confirmations with unchanged references and bars.
+
+Source and collaborator main both hold 914a900f94e48161a89970018bf86b6fbf9db7cf before this documentation update.
+This goal/status milestone requires collaborator synchronization; record the verified outcome separately.
 
 ## Stage A delivery (2026-10-31)
 

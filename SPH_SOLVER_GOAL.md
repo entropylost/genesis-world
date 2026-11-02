@@ -156,9 +156,86 @@ active work in this stage. The staged accuracy bands of 2026-10-30 remain in for
 - Compare candidates at matched physics, geometry, resolution, time steps and tolerances. A benefit measured only at
   a time step that fails dynamic-link validation cannot establish dynamic-coupling acceleration.
 
+### N6: ablate every accuracy, conservation and boundary correction (owner update, 2026-11-02)
+
+Measure the accuracy benefit, runtime cost and side effects of every correction discussed below. The purpose is to
+identify the simplest configuration supported by evidence, not to assume that more corrections are better or that all
+can be removed. This is an active next-stage goal alongside N1-N5. Keep the current engineering baseline unchanged
+until a replacement passes the matched validation.
+
+#### Components and controls
+
+| Id | Component | Required comparison |
+| --- | --- | --- |
+| A1 | Directional consistency of the interior viscosity (15 coefficients per particle) | current directional correction versus the original uncorrected pair coefficient and an isotropic scalar correction; retain symmetric nonnegative pair weights in proposed delivery candidates |
+| A2 | Ghost-fluid columns for wall viscosity | current 8-point columns versus the original single boundary-particle pair model; compare 1/2/4/8-point quadrature with the same column definition to separate the boundary model from integration cost |
+| A3 | Wall shear consistency scaling | enabled versus disabled on identical geometry; report the distribution of the scale, how often its [0.25, 4] bounds activate, corner/free-surface behavior and sensitivity to particle-wall distance |
+| A4 | Projection of the net viscosity residual force and torque | projection on/off at matched CG tolerance, plus a tighter-tolerance control without projection; measure the correction magnitude, momentum drift, energy change and extra 6x6 solve/reduction cost |
+| A5 | Wall clearance protection and its angular-momentum compensation | full guard versus off; isolate the normal velocity constraint, soft position recovery and the global rotational velocity correction; include position recovery disabled as a control for the need for angular compensation |
+| A6 | Isotropic pressure and corrected density (experimental, off in the baseline) | symmetric pressure baseline versus isotropic pressure with corrected density off/on; retain the original force/density definitions and record their work consistency, rest heating and shear benefit |
+| A7 | Position-level density drift correction (experimental, off in the baseline) | velocity correction versus position correction at matched configuration; record volume benefit, velocity/rotation changes, added iterations, dynamic-link failures and non-finite onset |
+
+For A1 report regularization, nonnegative clipping and the free-surface blend, including how often they are active.
+For A2 report the near-wall distance floor and the column start determined by the nearest fluid gap. For A3 use any
+additional parameter sweep to explain sensitivity, not to tune separately to each validation scene.
+For A5 quantify position shifts, corrective impulses, the global rotational adjustment, and kinetic and potential
+energy changes separately. Its reaction belongs in rigid force/torque accounting. A guard-disabled run that leaks is a
+measured failure, not a valid fast replacement; thick walls do not justify assuming the guard is redundant.
+For A6 and A7 retain the known negative results as controls and stop divergent experiments at their declared failure
+condition. These comparisons do not enable either option by default.
+
+#### Matched protocol and interaction tests
+
+- Freeze clean Genesis and FluidBench revisions, reference solutions, horizons, seeds, initial states, geometry, mass,
+  viscosity, time steps, tolerances and iteration caps before the campaign. Keep implicit interior/wall viscosity and
+  two-way rigid response in the main comparisons. Add benchmark-only switches where needed and record them explicitly;
+  do not change production defaults merely to run an ablation.
+- Start with one-component changes from the current baseline. Then test the important dependencies: A1 x A2 x A3 for
+  wall/interior consistency, A4 x CG tolerance, A5 position recovery x rotational compensation, A6 x A7, and A7 x A5.
+  Use staged screening rather than an indiscriminate full Cartesian product. Confirm promising combinations and any
+  simplest viable configuration over the full declared horizons.
+- Use a simple documented configuration as a second anchor, with the extra corrections removed where the equations
+  still define a valid model. Record why any removal is mathematically undefined or requires a replacement boundary
+  model. Include combined removals so that individually small benefits cannot hide an important interaction.
+- Separately measure the cost of the coupling structure: converged viscosity-pressure iteration and rigid constraint
+  repetitions versus one-pass diagnostic controls. Chebyshev acceleration and warm starts can be solver controls at
+  matched residuals. A one-pass or disabled-feedback run is not an accepted simplification unless the original coupled
+  residuals, conservation and accuracy criteria pass; keep it distinct from the correction ablations.
+- Screen on analytic viscosity/shear, wall and conservation cases, then confirm on V1-V10 as applicable, thick-wall
+  rest, V12, full-horizon pouring, stirring and a free/constraint-coupled link. Include R1/R2/R3 and nu = 1e-4 to
+  1e-2 m^2/s for final candidates; low-viscosity water remains a diagnostic. Thin-wall repair stays deferred.
+  Keep both settled and original initialization controls where startup noise affects the conclusion.
+- Report every pressure, viscosity, coupling, drift and constraint residual, iteration count, cap exhaustion, slot
+  overflow and failure time. A non-finite, leaking or unconverged run remains visible but cannot supply an accepted
+  speedup or accuracy result. Separate static/prescribed walls from dynamic links and their supported time steps.
+
+#### Measurements and delivery decision
+
+For every component and selected combination publish:
+
+- Accuracy: profile L2 and maximum error, effective viscosity/modal and rotational decay, slip, integrated force and
+  torque, hydrostatic pressure/load, floating draft and settling rate, volume drift and leakage against the fixed
+  analytic or converged references.
+- Side effects: rest RMS/quantile/maximum speed, kinetic and potential energy, driven work/dissipation balance,
+  linear/angular momentum drift, correction magnitude and activation frequency, stiffness/convergence changes,
+  restart/selected-reset sensitivity, and the time and stage of instability.
+- Cost: uninstrumented warmed step time and RTF (at least three repeats with spread), instrumented stage/kernel
+  breakdown including correction setup and global reductions, GPU task count, iterations, build/compile time and
+  peak memory. Compare one environment and independent batches; report both per-environment and total throughput.
+- Attribution: implement or verify separate pressure, viscous and clearance force/torque/impulse readouts and their
+  sum against the total. The current test-side optional pressure getter is insufficient while the committed solver
+  lacks it; empty or unavailable pressure data cannot count as a successful pressure/viscosity separation.
+
+Provide a compact table with baseline, each ablation, important combinations, absolute errors, accuracy changes,
+time and memory changes, side effects, convergence and a recommendation: retain, simplify, remove, or inconclusive.
+Use the existing staged accuracy and conservation/energy bars, and keep the original stricter verdicts beside them.
+Select any default change from this evidence and re-run N1-N3 on the resulting clean commit. If no simpler variant
+qualifies, retain the baseline and publish the measured reason. Store commands and receipts in FluidBench and sync
+adopted code, tests, examples and documentation to the collaborator repository under the existing requirement.
+
 ### Completion and delivery
 
-Track N1-N5 separately as pending, implemented, validated or measured, with exact commits, commands and receipts.
+Track N1-N6 separately as pending, implemented, validated or measured, with exact commits, commands and receipts.
 Publish the accepted operating range, original and staged verdicts, remaining failures and reproducible public examples.
 Retain historical negative results. Sync every coherent milestone, including goals/status, code, tests and examples,
 to `entropylost/genesis-world:main` under the existing owner requirement; verify both heads or the integrated diff.
