@@ -1029,6 +1029,60 @@ through `scripts/campaign_env.sh <revision>` of the data directory against a fro
     unit tests as in finding 57), but reading four shares per neighbor costs more than the task it saves: RTF 0.248 at
     R2 (0.282 with four tasks) and 0.428-0.445 at R1 (0.408-0.425).
 
+72. N6 stage 1: one-component ablations of the corrections (Genesis f7f339ca, FluidBench 0d1c9329, frozen worktrees;
+    FluidBench `cmds/gen_n6s.py`, receipts `*__n6s_<config>_*`, timing records `*@sphgoal-n6t-*`, kernel profiles
+    `profiles/n6_*_kp_dt8`; tables in FluidBench `report/sph_n6.md`). Twenty configurations on sixteen screening cases
+    with activation diagnostics; costs from uninstrumented timings of thick-wall S1 R2 at dt x8 (three repeats each) and
+    kernel profiles, against the baseline at RTF 0.277 and 9.36 ms of GPU time per substep. Every receipt of the screen
+    exists; the unit tests on f7f339ca pass as in finding 57. Measurements and the stage 1 recommendation per component:
+    - A1 directional viscosity correction (0.61 ms per substep for its moments and solve): without it (`none`) or with
+      the isotropic scalar (`isotropic`) the pipe centerline error goes from 1.0 % to 15.5 % and 13.4 %, the mode decay
+      errors grow by 14-37 % (nu 1e-3: 18.9 % to 25.4 % and 22.1 %, out of the staged band) and the spin-down rms from
+      3.2 % to 4.3 % and 3.6 %; the Couette and Stokes torque errors fall (0.39 to 0.28-0.29, 0.41 to 0.18-0.21), which
+      the weaker viscous operator gives by offsetting the pressure friction (N4), not by a resolved stress; the momentum
+      drift halves and the stirring balance stays within 0.4 %. The density solves then take 102 and 100 instead of 92
+      iterations per substep, so neither is faster (RTF 0.275, 0.267). The free-surface blend acts on 0.9 % and 0.9 % of
+      the particles (partial / isotropic), 1.4-2.0 % of the pairs are clipped at zero. Retain.
+    - A2 ghost columns (1.16 ms per substep with 8 points): with 2 points the screen keeps every value of the baseline
+      within the spread of repeated runs (pipe 0.53 % against 1.0 %, decay 14.5 / 18.8 / 27.5 %, spin-down 3.3 %,
+      Couette torque 0.35, Stokes 0.41, momentum, loads, held joints, stirring -0.70 %, rest rms 0.0084 m/s) for 0.61
+      ms, RTF 0.290 (+4.5 %); 4 points are identical to 8 (0.79 ms, +3.2 %); 1 point fails (pipe 153 %, decay 2-3 times
+      the error); the single boundary-particle pairs fail the pipe (28.5 %) and the spin-down (5.6 %) at +8.1 %.
+      Candidate simplification: 2 (or 4) points, to be confirmed at R1-R3, over viscosity and full horizons (stage 2).
+    - A3 wall shear consistency (about 0.05 ms): off, the Stokes torque error goes from 0.41 to 1.18, the pipe
+      centerline to 17 % and the Couette torque to 0.45; the decay and the spin-down improve slightly (spin-down 2.1 %).
+      The scale averages 1.5 +- 1.2 on the Couette walls, 27 % of the near-wall particles keep the fallback 1 (corner or
+      free surface), 0.7 % reach the lower bound 0.25 and 11 % the upper bound 4: the bounds act often, and a
+      sensitivity study of the upper bound belongs to stage 2. Retain.
+    - A4 projection of the viscosity residual (0.30 ms, +3.7 % RTF without it): off, the momentum drift is 1.3e-4 and
+      6.9e-5 per s, above the bar of 1e-4; with a tenfold tighter viscosity tolerance instead it is 1.4e-5 and 1.1e-5,
+      but the settling sphere and the held plate then stop 327 and 45 solves at their caps (invalid) and V12 fails. The
+      correction itself is small (1.1e-7 m/s and 4e-6 rad/s on the Couette). Retain.
+    - A5 wall clearance guard (0.11 ms; 18231 corrections on the Couette over 2 x 1 s, summed shifts 0.55 mm, impulse
+      7e-4 N s, rotation 5e-9 rad/s; no correction in the thick-wall cup at rest): off or reduced to its velocity
+      constraint (`a5vel`), no screening case leaks or changes beyond the spread of repeated runs, and the stirring
+      balance moves from -0.76 % to +0.13 % (off) and +0.06 % (velocity only), the guard dissipating a little; without
+      the rotational compensation but with the position recovery (`a5norot`) the angular momentum drift reaches 9.2e-5
+      per s, close to the bar, so the rotation is needed exactly when the recovery shifts positions, while without the
+      recovery (`a5nopos`) the drift is 4.6e-6. The timing differences (-1 to -4 %) are within the spread of the
+      timings. Candidate simplification: the velocity constraint alone, pending the leakage-prone free-link, pouring and
+      stirring scenes over their full horizons (a thick-wall rest without leakage does not prove the guard redundant).
+    - A6 isotropic pressure (experimental): the shear errors drop (Couette torque 0.06, Stokes 0.05, settling 15 % and
+      8.6 % with the corrected density) but the bulk hydrostatic pressure is 59 % and 69 % off, the stirring balance is
+      -180 % and -780 % of the work (energy created), and the rest rms 0.17 m/s; 11-14 % slower. Not adopted; it remains
+      the measured control of N4.
+    - A7 position drift correction (experimental): the mode decay improves (nu 1e-3: 8.4 %, nu 1e-4: 11.7 %, inside the
+      staged band, against 18.9 % and 26.7 %), the plank draft to 5.2 % and the original lattice in the thick-wall cup
+      keeps 99 % of its particles inside (71 crossings against 7157), but the S1 timing run at dt x8 turns non-finite
+      (50 unconverged solves) as in findings 51-53. Not adopted by default; its interaction with A5 and with the time
+      step belongs to stage 2 and N2.
+    - Coupling controls: one coupling pass (`c1pass`) runs 23 % faster but stops 235-4000 coupling solves at the cap per
+      case and fails the held plate (readout 18 %) and the stirring balance (-53 %): invalid, not a simplification.
+      Without the rigid constraint repetitions (`c2norep`) the screen keeps the baseline values; it contains no contact
+      scene, so the repetitions stay inconclusive until a contact case is run.
+    - The simple anchor without A1-A5 (`simple`): pipe 174 %, decay 42-48 %, spin-down 10 %, momentum drift 1.1e-4 per
+      s: not a valid engineering model, RTF +6.6 %.
+
 ## Validation at 47499e5c (v5)
 
 Receipts tagged `v5*` (FluidBench `report/sph_goal.md`, acceptance matrix): `v5` default, `v5i` isotropic pressure
