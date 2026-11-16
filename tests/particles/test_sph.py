@@ -345,7 +345,13 @@ def test_pressure_carries_column_weight(show_viewer, pressure_solver):
 
 
 def create_viscous_ball(
-    show_viewer, viscosity, n_envs=0, micropolar=False, max_viscosity_error=1e-3, density_correction="velocity"
+    show_viewer,
+    viscosity,
+    n_envs=0,
+    micropolar=False,
+    max_viscosity_error=1e-3,
+    density_correction="velocity",
+    viscosity_integration="implicit",
 ):
     """A ball of viscous liquid at zero gravity, far from the bounds of the domain, for the default solver."""
     scene = gs.Scene(
@@ -362,6 +368,7 @@ def create_viscous_ball(
             micropolar=micropolar,
             max_viscosity_error=max_viscosity_error,
             density_correction=density_correction,
+            viscosity_integration=viscosity_integration,
         ),
         show_viewer=show_viewer,
     )
@@ -414,6 +421,38 @@ def test_implicit_viscosity_conserves_momentum(show_viewer):
     scene.step()
     dissipation = float(scene.sph_solver.get_viscous_dissipation())
     assert dissipation < 1e-3 * get_momenta(liquid, mass)[2]
+
+
+@pytest.mark.required
+def test_explicit_viscosity_dissipates_strain(show_viewer):
+    viscosity = 1e-3
+    scene, liquid = create_viscous_ball(show_viewer, viscosity=viscosity, viscosity_integration="explicit")
+    mass = scene.sph_solver.particle_volume * 1000.0
+    pos = liquid.get_particles_pos()
+    omega, shear = 5.0, 3.0
+    vel = torch.stack((-omega * pos[:, 1] + shear * pos[:, 2] + 0.1, omega * pos[:, 0], torch.zeros_like(pos[:, 0])), 1)
+    liquid.set_particles_vel(vel)
+    momentum_0, angular_0, energy_0 = get_momenta(liquid, mass)
+    n_steps = 50
+    for _ in range(n_steps):
+        scene.step()
+    momentum, angular, energy = get_momenta(liquid, mass)
+    assert_allclose(momentum, momentum_0, atol=2e-5 * np.linalg.norm(momentum_0))
+    assert_allclose(angular, angular_0, atol=2e-3 * np.linalg.norm(angular_0))
+    # The simple shear is a pure strain of rate shear / 2 plus a rigid rotation, so the viscosity dissipates
+    # 2 * mu * |E|^2 = mu * shear^2 per unit volume, the strain decaying little over the horizon.
+    volume = 4.0 / 3.0 * np.pi * 0.06**3
+    duration = n_steps * scene.dt
+    assert_allclose(energy_0 - energy, 1000.0 * viscosity * shear**2 * volume * duration, rtol=0.25)
+
+    # rigid rotation and translation dissipate nothing
+    scene.reset()
+    pos = liquid.get_particles_pos()
+    vel = torch.stack((-omega * pos[:, 1] + 0.1, omega * pos[:, 0], torch.zeros_like(pos[:, 0])), 1)
+    liquid.set_particles_vel(vel)
+    energy_0 = get_momenta(liquid, mass)[2]
+    scene.step()
+    assert energy_0 - get_momenta(liquid, mass)[2] < 1e-4 * energy_0
 
 
 @pytest.mark.required

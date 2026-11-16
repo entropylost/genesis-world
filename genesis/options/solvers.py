@@ -790,6 +790,13 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
         Whether DFSPH starts each pressure solve from half the pressure of the previous substep. This reduces the
         number of solver iterations for fluid at rest or in slow motion, but it can carry pressure spikes from
         violent impacts over to the next substep. Defaults to True.
+    viscosity_integration : str, optional
+        How the viscosity of the fluid is integrated in time. 'implicit' solves the viscosity together with the
+        pressure, with no-slip walls on rigid geoms: it is stable for any viscosity and time step, but each substep
+        costs several more solves, the more the more viscous the fluid. 'explicit' adds a viscous force computed from
+        the current velocities: it is much cheaper and suits fluids about as viscous as water, but the walls are free of
+        viscous drag, and the time step must stay below about 0.01 * (2 * particle_size)^2 / viscosity, beyond which the
+        fluid blows up (a warning is logged at build time). Only used by the default solver. Defaults to 'implicit'.
     max_viscosity_error : float, optional
         Maximum relative residual of the implicit viscosity solve, and of the agreement between the viscosity and the
         pressure of a substep. Smaller values give a more accurate viscous damping and wall drag at the cost of more
@@ -916,6 +923,7 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
     min_density_solver_iterations: PositiveInt = 1
     skip_divergence_solver: StrictBool = False
     warm_start: StrictBool = True
+    viscosity_integration: Literal["implicit", "explicit"] = "implicit"
     max_viscosity_error: PositiveFloat = 0.1 * 0.01
     max_viscosity_solver_iterations: PositiveInt = 100
     max_coupling_iterations: PositiveInt = 30
