@@ -177,7 +177,8 @@ def test_coupling_force_wakes_hibernated_link(n_envs, show_viewer):
 
 
 @pytest.mark.required
-def test_fluid_link_momentum_exchange(show_viewer):
+@pytest.mark.parametrize("viscosity_integration", ["implicit", "explicit"])
+def test_fluid_link_momentum_exchange(viscosity_integration, show_viewer):
     # A box thrown into a ball of viscous liquid at zero gravity: pressure and wall viscosity exchange equal and opposite
     # impulses with the link, applied at the fluid particles, so the total linear and angular momentum stay constant.
     scene = gs.Scene(
@@ -191,6 +192,7 @@ def test_fluid_link_momentum_exchange(show_viewer):
             particle_volume_factor=1.0,
             lower_bound=(-0.5, -0.5, -0.5),
             upper_bound=(0.5, 0.5, 0.5),
+            viscosity_integration=viscosity_integration,
         ),
         show_viewer=show_viewer,
     )
@@ -219,11 +221,15 @@ def test_fluid_link_momentum_exchange(show_viewer):
         return momentum, angular, vel_box
 
     momentum_0, angular_0, vel_box_0 = momenta()
+    viscous_force_x = 0.0
     for _ in range(150):
         scene.step()
+        viscous_force = scene.sph_solver.get_links_fluid_wrench_parts()["viscous"][0]
+        viscous_force_x += tensor_to_array(viscous_force)[box.base_link_idx, 0]
     momentum, angular, vel_box = momenta()
-    # the impact took most of the box momentum
+    # the impact took most of the box momentum, a sizable share of it by the drag of the wall viscosity
     assert np.linalg.norm(vel_box) < 0.5 * np.linalg.norm(vel_box_0)
+    assert viscous_force_x * scene.dt < -0.1 * box_mass * vel_box_0[0]
     assert_allclose(momentum, momentum_0, atol=1e-4 * np.linalg.norm(momentum_0))
     assert_allclose(angular, angular_0, atol=1e-3 * np.linalg.norm(angular_0))
 
