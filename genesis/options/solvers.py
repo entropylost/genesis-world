@@ -797,7 +797,9 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
         particles and from the rigid geoms, computed from the current velocities: it is much cheaper and suits fluids
         about as viscous as water, but its wall drag is less accurate, as the walls let the fluid slip partially, and
         the time step must stay below about 0.01 * (2 * particle_size)^2 / viscosity, beyond which the fluid blows up
-        (a warning is logged at build time). Only used by the default solver. Defaults to 'implicit'.
+        (a warning is logged at build time). 'auto' picks 'explicit' when the substep time step is within that limit
+        for the most viscous liquid of the scene, and 'implicit' otherwise: it gets the speed of 'explicit' for fluids
+        like water, at the cost of its less accurate wall drag. Only used by the default solver. Defaults to 'auto'.
     max_viscosity_error : float, optional
         Maximum relative residual of the implicit viscosity solve, and of the agreement between the viscosity and the
         pressure of a substep. Smaller values give a more accurate viscous damping and wall drag at the cost of more
@@ -924,7 +926,7 @@ class SPHOptions(GravityMixin, TimeBasedMixin):
     min_density_solver_iterations: PositiveInt = 1
     skip_divergence_solver: StrictBool = False
     warm_start: StrictBool = True
-    viscosity_integration: Literal["implicit", "explicit"] = "implicit"
+    viscosity_integration: Literal["auto", "implicit", "explicit"] = "auto"
     max_viscosity_error: PositiveFloat = 0.1 * 0.01
     max_viscosity_solver_iterations: PositiveInt = 100
     max_coupling_iterations: PositiveInt = 30

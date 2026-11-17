@@ -323,7 +323,7 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
         self._df_skip_div = options.skip_divergence_solver
         self._df_warm_start = options.warm_start
         self._micropolar = options.micropolar
-        self._is_viscosity_explicit = options.viscosity_integration == "explicit"
+        self._viscosity_integration = options.viscosity_integration
         self._visc_max_error = options.max_viscosity_error
         self._visc_max_iters = options.max_viscosity_solver_iterations
         self._max_coupling_iters = options.max_coupling_iterations
@@ -862,19 +862,21 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
                 self._coupled_links_idx = np.unique(boundaries_link_idx_all[boundaries_is_fixed_all == 0])
             self._has_rigid_coupling = len(self._coupled_links_idx) > 0
             viscosity_max = max(entity.material.viscosity for entity in self.entities)
-            self._has_implicit_viscosity = viscosity_max > 0.0 and not self._is_viscosity_explicit
-            self._has_explicit_viscosity = viscosity_max > 0.0 and self._is_viscosity_explicit
             # The explicit viscosity terms in _task_compute_non_pressure_forces and _task_compute_wall_viscous_acc are
             # only stable below this time step.
-            if self._has_explicit_viscosity:
-                stable_dt = 0.01 * self._support_radius**2 / viscosity_max
-                if self._substep_dt > stable_dt:
-                    gs.logger.warning(
-                        f"Current substep time step ({self._substep_dt:.4g}s) is larger than the stable time step "
-                        f"({stable_dt:.4g}s) of the explicit SPH viscosity. Please consider reducing the time step or "
-                        "the liquid viscosity, increasing the particle size, or setting `viscosity_integration` to "
-                        "'implicit'."
-                    )
+            stable_dt = 0.01 * self._support_radius**2 / viscosity_max if viscosity_max > 0.0 else math.inf
+            is_viscosity_explicit = self._viscosity_integration == "explicit" or (
+                self._viscosity_integration == "auto" and self._substep_dt <= stable_dt
+            )
+            self._has_implicit_viscosity = viscosity_max > 0.0 and not is_viscosity_explicit
+            self._has_explicit_viscosity = viscosity_max > 0.0 and is_viscosity_explicit
+            if self._has_explicit_viscosity and self._substep_dt > stable_dt:
+                gs.logger.warning(
+                    f"Current substep time step ({self._substep_dt:.4g}s) is larger than the stable time step "
+                    f"({stable_dt:.4g}s) of the explicit SPH viscosity. Please consider reducing the time step or the "
+                    "liquid viscosity, increasing the particle size, or setting `viscosity_integration` to 'implicit' "
+                    "or 'auto'."
+                )
 
             # Volume map of each link carrying boundary particles, over their bounding box widened by the support radius
             self._volume_maps = []
@@ -4612,7 +4614,8 @@ class SPHSolver(GravityMixin, TimeBasedMixin, Solver):
 
         It is the dissipation of the implicit viscosity operator at the final velocities of each substep, the no-slip
         walls included (see _kernel_accumulate_viscous_dissipation). The tensor has shape (n_envs,), and is a scalar for
-        a scene that is not batched. It is zero for an inviscid fluid and with `viscosity_integration='explicit'`.
+        a scene that is not batched. It is zero for an inviscid fluid and when the viscosity is integrated explicitly
+        (see `viscosity_integration`).
         """
         envs_idx = self._scene._sanitize_envs_idx(envs_idx)
         if not self._has_implicit_viscosity:

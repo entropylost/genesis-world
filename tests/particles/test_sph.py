@@ -394,23 +394,32 @@ def get_momenta(liquid, mass):
 
 
 @pytest.mark.required
-def test_implicit_viscosity_conserves_momentum(show_viewer):
+@pytest.mark.parametrize("viscosity_integration", ["implicit", "auto"])
+def test_implicit_viscosity_conserves_momentum(viscosity_integration, show_viewer):
     # The implicit viscosity is a sum of central pair forces, so a ball of liquid alone keeps its linear and angular
     # momentum while the viscosity dissipates its shear, and its rigid rotation is a null mode of the dissipation. The
-    # rigid correction of the residual keeps this exact at a loose tolerance of the viscosity solve as well.
-    scene, liquid = create_viscous_ball(show_viewer, viscosity=1e-2, max_viscosity_error=0.05)
+    # rigid correction of the residual keeps this exact at a loose tolerance of the viscosity solve as well. The
+    # viscosity is above the stability limit of the explicit viscosity at this substep, so 'auto' integrates it
+    # implicitly.
+    scene, liquid = create_viscous_ball(
+        show_viewer, viscosity=1e-2, max_viscosity_error=0.05, viscosity_integration=viscosity_integration
+    )
     mass = scene.sph_solver.particle_volume * 1000.0
     pos = liquid.get_particles_pos()
     omega, shear = 5.0, 3.0
     vel = torch.stack((-omega * pos[:, 1] + shear * pos[:, 2] + 0.1, omega * pos[:, 0], torch.zeros_like(pos[:, 0])), 1)
     liquid.set_particles_vel(vel)
     momentum_0, angular_0, energy_0 = get_momenta(liquid, mass)
+    dissipation = 0.0
     for _ in range(50):
         scene.step()
+        dissipation += scene.sph_solver.get_viscous_dissipation()
     momentum, angular, energy = get_momenta(liquid, mass)
     assert_allclose(momentum, momentum_0, atol=2e-5 * np.linalg.norm(momentum_0))
     assert_allclose(angular, angular_0, atol=2e-5 * np.linalg.norm(angular_0))
     assert energy < energy_0
+    # the viscous dissipation readout accounts for the kinetic energy the ball lost
+    assert_allclose(dissipation, energy_0 - energy, rtol=0.02)
     assert scene.sph_solver.solve_stats.n_unconverged_viscosity == 0
 
     # rigid rotation and translation dissipate nothing
